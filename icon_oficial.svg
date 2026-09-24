@@ -1,0 +1,51 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="accent" x1="150" y1="118" x2="365" y2="390" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#64D8FF"/>
+      <stop offset="1" stop-color="#8B7CFF"/>
+    </linearGradient>
+
+    <filter id="shadow" x="70" y="66" width="372" height="396" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#000000" flood-opacity="0.24"/>
+    </filter>
+  </defs>
+
+  <!-- App tile -->
+  <rect x="24" y="24" width="464" height="464" rx="108" fill="#0E1116"/>
+
+  <!-- Subtle inner field -->
+  <rect x="72" y="72" width="368" height="368" rx="84" fill="#141A21"/>
+
+  <!-- Capture / study brackets -->
+  <path d="M143 180V151C143 136.641 154.641 125 169 125H198"
+        stroke="url(#accent)" stroke-width="22" stroke-linecap="round"/>
+  <path d="M314 125H343C357.359 125 369 136.641 369 151V180"
+        stroke="url(#accent)" stroke-width="22" stroke-linecap="round"/>
+  <path d="M143 332V361C143 375.359 154.641 387 169 387H198"
+        stroke="url(#accent)" stroke-width="22" stroke-linecap="round"/>
+  <path d="M314 387H343C357.359 387 369 375.359 369 361V332"
+        stroke="url(#accent)" stroke-width="22" stroke-linecap="round"/>
+
+  <!-- Main document -->
+  <g filter="url(#shadow)">
+    <path d="M183 139C170.85 139 161 148.85 161 161V351C161 363.15 170.85 373 183 373H329C341.15 373 351 363.15 351 351V204.5L285.5 139H183Z"
+          fill="#F4F7FB"/>
+    <path d="M285.5 139V190.5C285.5 198.508 291.992 205 300 205H351"
+          fill="#DDE6F0"/>
+    <path d="M285.5 139V190.5C285.5 198.508 291.992 205 300 205H351"
+          stroke="#C8D3DF" stroke-width="6" stroke-linejoin="round"/>
+  </g>
+
+  <!-- Reading lines -->
+  <path d="M199 228H313" stroke="#27313D" stroke-width="15" stroke-linecap="round"/>
+  <path d="M199 267H286" stroke="#576473" stroke-width="13" stroke-linecap="round"/>
+  <path d="M199 305H258" stroke="#576473" stroke-width="13" stroke-linecap="round"/>
+
+  <!-- Highlight / annotation mark -->
+  <rect x="194" y="327" width="103" height="16" rx="8" fill="url(#accent)"/>
+
+  <!-- Small flashcard cue -->
+  <rect x="304" y="282" width="55" height="48" rx="12" fill="#1A2230" stroke="url(#accent)" stroke-width="6"/>
+  <path d="M318 298H345" stroke="#F4F7FB" stroke-width="7" stroke-linecap="round"/>
+  <path d="M318 313H337" stroke="#A8B5C3" stroke-width="6" stroke-linecap="round"/>
+</svg>
