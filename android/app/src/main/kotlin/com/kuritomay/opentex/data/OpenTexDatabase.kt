@@ -413,24 +413,26 @@ class DocumentRepository(private val context: Context, private val dao: OpenTexD
         )
     }
 
-    suspend fun import(uri: Uri): DocumentEntity {
+    suspend fun import(uri: Uri): DocumentEntity = withContext(Dispatchers.IO) {
         val resolver = context.contentResolver
         runCatching { resolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
         val existing = dao.findByUri(uri.toString())
-        if (existing != null) return existing.also { open(it) }
+        if (existing != null) { open(existing); return@withContext existing }
         val name = queryName(resolver, uri) ?: "Documento"
         val type = detectType(name, resolver.getType(uri))
         val preview = if (type == "PDF") renderPdfThumbnail(resolver, uri) else null
         val document = DocumentEntity(uri = uri.toString(), name = name, type = type, pageCount = preview?.second ?: 0, thumbnailPath = preview?.first)
-        return document.copy(id = dao.insertDocument(document)).also { open(it) }
+        val saved = document.copy(id = dao.insertDocument(document))
+        open(saved)
+        saved
     }
     suspend fun importAll(uris: List<Uri>): List<DocumentEntity> = uris.distinct().mapNotNull { uri -> runCatching { import(uri) }.getOrNull() }
 
-    suspend fun importTree(tree: Uri): Int {
+    suspend fun importTree(tree: Uri): Int = withContext(Dispatchers.IO) {
         runCatching { context.contentResolver.takePersistableUriPermission(tree, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
         val rootId = android.provider.DocumentsContract.getTreeDocumentId(tree)
         val uris = collectDocuments(tree, rootId, 0)
-        return importAll(uris).size
+        importAll(uris).size
     }
 
     private fun collectDocuments(tree: Uri, documentId: String, depth: Int): List<Uri> {
@@ -471,30 +473,30 @@ class DocumentRepository(private val context: Context, private val dao: OpenTexD
     suspend fun closeTab(documentId: Long) = dao.closeTab(documentId)
     suspend fun setPinned(documentId: Long, pinned: Boolean) = dao.setPinned(documentId, pinned)
     suspend fun setAlias(documentId: Long, alias: String) = dao.setAlias(documentId, alias.trim().ifBlank { null })
-    suspend fun removeFromLibrary(document: DocumentEntity): Boolean {
+    suspend fun removeFromLibrary(document: DocumentEntity): Boolean = withContext(Dispatchers.IO) {
         dao.deleteTabsForDocument(document.id)
         dao.deleteDocument(document.id)
-        document.thumbnailPath?.let { File(it).delete() }
-        return true
+        document.thumbnailPath?.let { path -> runCatching { File(path).delete() } }
+        true
     }
     fun canDeleteFile(document: DocumentEntity): Boolean = context.checkUriPermission(Uri.parse(document.uri), android.os.Process.myPid(), android.os.Process.myUid(), android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION) == android.content.pm.PackageManager.PERMISSION_GRANTED
-    suspend fun deleteFileAndRemove(document: DocumentEntity): Boolean {
-        if (!canDeleteFile(document)) return false
+    suspend fun deleteFileAndRemove(document: DocumentEntity): Boolean = withContext(Dispatchers.IO) {
+        if (!canDeleteFile(document)) return@withContext false
         val deleted = runCatching { context.contentResolver.delete(Uri.parse(document.uri), null, null) > 0 }.getOrDefault(false)
         if (deleted) removeFromLibrary(document)
-        return deleted
+        deleted
     }
     suspend fun createAlbum(name: String) { if (name.isNotBlank()) dao.insertAlbum(AlbumEntity(name = name.trim())) }
     suspend fun addToAlbum(documentId: Long, albumId: Long) = dao.addDocumentToAlbum(DocumentAlbumEntity(documentId, albumId))
     suspend fun removeFromAlbum(documentId: Long, albumId: Long) = dao.removeDocumentFromAlbum(documentId, albumId)
     suspend fun saveAnnotation(annotation: AnnotationEntity): AnnotationEntity = annotation.copy(id = dao.insertAnnotation(annotation))
     suspend fun deleteAnnotation(id: Long) = dao.deleteAnnotation(id)
-    suspend fun saveCapture(documentId: Long, pageNumber: Int, left: Float, top: Float, width: Float, height: Float, bitmap: Bitmap): CaptureEntity {
+    suspend fun saveCapture(documentId: Long, pageNumber: Int, left: Float, top: Float, width: Float, height: Float, bitmap: Bitmap): CaptureEntity = withContext(Dispatchers.IO) {
         val directory = File(context.filesDir, "captures").apply { mkdirs() }
         val file = File(directory, "capture_${System.currentTimeMillis()}.webp")
         file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, 92, it) }
         val capture = CaptureEntity(documentId = documentId, pageNumber = pageNumber, left = left, top = top, width = width, height = height, imagePath = file.path)
-        return capture.copy(id = dao.insertCapture(capture))
+        capture.copy(id = dao.insertCapture(capture))
     }
     suspend fun deleteCapture(capture: CaptureEntity) {
         dao.deleteCapture(capture.id)
@@ -525,17 +527,27 @@ class DocumentRepository(private val context: Context, private val dao: OpenTexD
         else -> "DOCUMENTO"
     }
     private fun renderPdfThumbnail(resolver: ContentResolver, uri: Uri): Pair<String, Int>? = runCatching {
-        resolver.openFileDescriptor(uri, "r")?.use { descriptor -> PdfRenderer(descriptor).use { renderer ->
-            if (renderer.pageCount == 0) return null
-            renderer.openPage(0).use { page ->
+        val descriptor = resolver.openFileDescriptor(uri, "r") ?: return@runCatching null
+        var renderer: PdfRenderer? = null
+        try {
+            val pdf = PdfRenderer(descriptor).also { renderer = it }
+            if (pdf.pageCount == 0) return@runCatching null
+            val page = pdf.openPage(0)
+            try {
                 val width = 360
-                val bitmap = Bitmap.createBitmap(width, (page.height * (width.toFloat() / page.width)).toInt(), Bitmap.Config.ARGB_8888)
+                val height = (page.height * (width.toFloat() / page.width)).toInt().coerceAtLeast(1)
+                val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
                 page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
                 val directory = File(context.filesDir, "thumbnails").apply { mkdirs() }
                 val file = File(directory, "${uri.toString().hashCode()}.webp")
                 file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, 88, it) }
-                file.path to renderer.pageCount
+                file.path to pdf.pageCount
+            } finally {
+                page.close()
             }
-        } }
+        } finally {
+            runCatching { renderer?.close() }
+            runCatching { descriptor.close() }
+        }
     }.getOrNull()
 }

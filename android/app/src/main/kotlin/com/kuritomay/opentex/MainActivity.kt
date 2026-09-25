@@ -53,6 +53,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -68,6 +69,7 @@ import com.kuritomay.opentex.ui.theme.OpenTexColor
 import com.kuritomay.opentex.ui.theme.OpenTexSpacing
 import com.kuritomay.opentex.ui.theme.OpenTexTheme
 import com.kuritomay.opentex.ui.library.DocumentGrid
+import com.kuritomay.opentex.ui.library.LibraryLoading
 import com.kuritomay.opentex.ui.library.LibraryScreen
 import com.kuritomay.opentex.ui.library.SearchField
 import com.kuritomay.opentex.ui.library.SectionTitle
@@ -75,7 +77,9 @@ import com.kuritomay.opentex.ui.album.AlbumDetail
 import com.kuritomay.opentex.ui.album.AlbumsScreen
 import com.kuritomay.opentex.ui.study.FlashcardsScreen
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -96,13 +100,15 @@ class MainActivity : ComponentActivity() {
 
 class OpenTexViewModel(application: android.app.Application) : AndroidViewModel(application) {
     private val repository = DocumentRepository(application, (application as OpenTexApplication).database.dao())
-    val documents = repository.documents.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
-    val recent = repository.recent.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
-    val albums = repository.albums.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
-    val tabs = repository.tabs.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val documents = repository.documents.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    val recent = repository.recent.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    val albums = repository.albums.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    val tabs = repository.tabs.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     var selectedDocument by mutableStateOf<DocumentEntity?>(null); private set
     var targetPage by mutableStateOf<Int?>(null); private set
-    val flashcards = repository.flashcards.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val flashcards = repository.flashcards.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    var libraryLoaded by mutableStateOf(false); private set
+    init { viewModelScope.launch { runCatching { repository.documents.first() }; libraryLoaded = true } }
     var activeAlbum by mutableStateOf<AlbumWithDocuments?>(null); private set
     var importError by mutableStateOf<String?>(null); private set
     var notice by mutableStateOf<String?>(null); private set
@@ -171,12 +177,17 @@ class OpenTexViewModel(application: android.app.Application) : AndroidViewModel(
 }
 
 @Composable private fun OpenTexApp(viewModel: OpenTexViewModel, onImport: () -> Unit, onExportCards: () -> Unit, onImportCards: () -> Unit, onImportFolder: () -> Unit) {
-    BackHandler(enabled = viewModel.selectedDocument != null || viewModel.activeAlbum != null) {
+    val document = viewModel.selectedDocument
+    val album = viewModel.activeAlbum
+    BackHandler(enabled = document != null || album != null) {
         if (viewModel.selectedDocument != null) viewModel.closeReader() else viewModel.closeAlbum()
     }
-    when { viewModel.selectedDocument != null -> PdfReader(viewModel.selectedDocument!!, viewModel, viewModel::closeReader, viewModel::saveReadingState)
-        viewModel.activeAlbum != null -> AlbumDetail(viewModel.activeAlbum!!, viewModel::closeAlbum, viewModel::albumDocuments, viewModel::open)
-        else -> Home(viewModel, onImport, onExportCards, onImportCards, onImportFolder) }
+    when {
+        document != null -> PdfReader(document, viewModel, viewModel::closeReader, viewModel::saveReadingState)
+        album != null -> AlbumDetail(album, viewModel::closeAlbum, viewModel::albumDocuments, viewModel::open)
+        else -> Home(viewModel, onImport, onExportCards, onImportCards, onImportFolder)
+    }
+    CrashReportDialog()
 }
 
 @Composable private fun Home(viewModel: OpenTexViewModel, onImport: () -> Unit, onExportCards: () -> Unit, onImportCards: () -> Unit, onImportFolder: () -> Unit) {
@@ -196,7 +207,7 @@ class OpenTexViewModel(application: android.app.Application) : AndroidViewModel(
         }
     }, bottomBar = { OpenTexBottomNavigation(section) { section = it } }) { padding ->
         when (section) {
-            0 -> LibraryScreen(documents, tabs, Modifier.padding(padding), viewModel::open, viewModel::closeTab, { managingDocument = it }, onImport, libraryQuery)
+            0 -> if (!viewModel.libraryLoaded) LibraryLoading(Modifier.padding(padding)) else LibraryScreen(documents, tabs, Modifier.padding(padding), viewModel::open, viewModel::closeTab, { managingDocument = it }, onImport, libraryQuery)
             1 -> AlbumsScreen(albums, Modifier.padding(padding), viewModel::selectAlbum, { createAlbum = true })
             2 -> FlashcardsScreen(flashcards, Modifier.padding(padding), { id, rating -> viewModel.rateFlashcard(id, rating) }, { id, page -> viewModel.openAt(id, page) }, editCard = { editingCard = it })
             else -> RecentScreen(recent, Modifier.padding(padding), viewModel::open)
@@ -218,6 +229,29 @@ class OpenTexViewModel(application: android.app.Application) : AndroidViewModel(
     }
     viewModel.importError?.let { AlertDialog(onDismissRequest = viewModel::clearError, title = { Text("No se pudo importar") }, text = { Text(it) }, confirmButton = { TextButton(viewModel::clearError) { Text("Entendido") } }) }
     viewModel.notice?.let { message -> AlertDialog(onDismissRequest = viewModel::clearNotice, title = { Text("Flashcards") }, text = { Text(message) }, confirmButton = { TextButton(viewModel::clearNotice) { Text("Entendido") } }) }
+}
+
+@Composable
+private fun CrashReportDialog() {
+    val context = LocalContext.current
+    var report by remember { mutableStateOf(CrashLogger.pendingCrash(context)) }
+    report?.let { trace ->
+        AlertDialog(
+            onDismissRequest = { CrashLogger.clear(context); report = null },
+            title = { Text("OpenTex se cerró inesperadamente") },
+            text = {
+                Column {
+                    Text("Guardamos la traza del fallo. Compártela para poder diagnosticar el problema.", style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(OpenTexSpacing.Sm))
+                    Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.small) {
+                        Text(trace.take(2000), Modifier.padding(OpenTexSpacing.Sm).heightIn(max = 240.dp).verticalScroll(rememberScrollState()), style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            },
+            confirmButton = { TextButton({ runCatching { context.startActivity(CrashLogger.shareIntent(trace)) }; CrashLogger.clear(context); report = null }) { Text("Compartir") } },
+            dismissButton = { TextButton({ CrashLogger.clear(context); report = null }) { Text("Cerrar") } },
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -278,7 +312,8 @@ class OpenTexViewModel(application: android.app.Application) : AndroidViewModel(
     var panY by rememberSaveable(document.id) { mutableFloatStateOf(0f) }
     var selectedTool by rememberSaveable { mutableStateOf<String?>(null) }
     var showNotes by rememberSaveable { mutableStateOf(false) }
-    var annotationColor by rememberSaveable { mutableStateOf(OpenTexColor.AnnotationYellow) }
+    var annotationColorValue by rememberSaveable { mutableLongStateOf(OpenTexColor.AnnotationYellow.toArgb().toLong()) }
+    val annotationColor = Color(annotationColorValue)
     var strokeSize by rememberSaveable { mutableFloatStateOf(.009f) }
     val undoStack = remember { mutableStateListOf<EditorAction>() }
     val redoStack = remember { mutableStateListOf<EditorAction>() }
@@ -296,7 +331,8 @@ class OpenTexViewModel(application: android.app.Application) : AndroidViewModel(
         val next = (zoom * scale).coerceIn(1f, 5f); zoom = next
         panX = if (next == 1f) 0f else panX + offset.x; panY = if (next == 1f) 0f else panY + offset.y
     }
-    LaunchedEffect(page, zoom) { save(document, page, zoom) }
+    LaunchedEffect(page) { save(document, page, zoom) }
+    LaunchedEffect(zoom) { delay(600); save(document, page, zoom) }
     Scaffold(
         topBar = { TopAppBar(title = { Text(document.name, maxLines = 1, overflow = TextOverflow.Ellipsis) }, navigationIcon = { IconButton(close) { Icon(Icons.Outlined.ArrowBack, "Biblioteca") } }, actions = { if (isText) Text(document.type, style = MaterialTheme.typography.labelSmall) else Text("${page + 1} / ${document.pageCount}", style = MaterialTheme.typography.labelSmall); IconButton({ showNotes = !showNotes }) { Icon(Icons.Outlined.NoteAlt, "Notas") }; IconButton({}) { Icon(Icons.Outlined.BookmarkBorder, "Marcador") }; IconButton({}) { Icon(Icons.Outlined.MoreHoriz, "Menú") } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = OpenTexColor.Surface)) },
         bottomBar = { if (!showNotes && !isText) ReaderToolbar(selectedTool, undoStack.isNotEmpty(), redoStack.isNotEmpty(), { label -> if (label == "Nota") { noteDraft = NoteDraft(documentId = document.id, pageNumber = page); selectedTool = null } else selectedTool = if (selectedTool == label) null else label }, { val action = undoStack.removeLastOrNull() ?: return@ReaderToolbar; when (action) { is EditorAction.Add -> viewModel.deleteAnnotation(action.annotation.id); is EditorAction.Remove -> viewModel.restoreAnnotation(action.annotation) }; redoStack.add(action) }, { val action = redoStack.removeLastOrNull() ?: return@ReaderToolbar; when (action) { is EditorAction.Add -> viewModel.restoreAnnotation(action.annotation); is EditorAction.Remove -> viewModel.deleteAnnotation(action.annotation.id) }; undoStack.add(action) }) },
@@ -305,12 +341,13 @@ class OpenTexViewModel(application: android.app.Application) : AndroidViewModel(
             showNotes -> ReaderNotes(page, notes, captures, Modifier.padding(padding), createNote = { notePage -> noteDraft = NoteDraft(documentId = document.id, pageNumber = notePage) }, editNote = { note -> noteDraft = NoteDraft(id = note.id, documentId = note.documentId, pageNumber = note.pageNumber, captureId = note.captureId, type = note.type, title = note.title, body = note.body, tags = note.tags.orEmpty(), createdAt = note.createdAt) }, deleteNote = viewModel::deleteNote, goToPage = { target -> page = target.coerceIn(0, (document.pageCount - 1).coerceAtLeast(0)); showNotes = false })
             isText -> TextDocument(document, Modifier.fillMaxSize().padding(padding))
             else -> Box(Modifier.fillMaxSize().padding(padding).background(OpenTexColor.Background), Alignment.Center) {
-                if (bitmap == null) {
+                val pageBitmap = bitmap
+                if (pageBitmap == null) {
                     if (document.type == "PDF") CircularProgressIndicator() else UnsupportedFormat(document.type)
-                } else Image(bitmap!!.asImageBitmap(), null, Modifier.fillMaxWidth().graphicsLayer(scaleX = zoom, scaleY = zoom, translationX = panX, translationY = panY).transformable(state).pointerInput(Unit) { detectTapGestures(onDoubleTap = { zoom = if (zoom > 1.1f) 1f else 2.25f; panX = 0f; panY = 0f }) }, contentScale = ContentScale.Fit)
+                } else Image(pageBitmap.asImageBitmap(), null, Modifier.fillMaxWidth().graphicsLayer(scaleX = zoom, scaleY = zoom, translationX = panX, translationY = panY).transformable(state).pointerInput(Unit) { detectTapGestures(onDoubleTap = { zoom = if (zoom > 1.1f) 1f else 2.25f; panX = 0f; panY = 0f }) }, contentScale = ContentScale.Fit)
             AnnotationCanvas(annotations, selectedTool, annotationColor, strokeSize, Modifier.fillMaxSize(), { points, _ -> viewModel.saveAnnotation(AnnotationEntity(documentId = document.id, pageNumber = page, tool = selectedTool ?: return@AnnotationCanvas, color = annotationColor.toArgb().toLong(), strokeWidth = strokeSize, opacity = if (selectedTool == "Resaltar") .34f else .9f, points = points)) { inserted -> undoStack.add(EditorAction.Add(inserted)); redoStack.clear() } }, { annotation -> viewModel.deleteAnnotation(annotation.id); undoStack.add(EditorAction.Remove(annotation)); redoStack.clear() })
-            if (selectedTool == "Capturar" && bitmap != null) CaptureSelector(Modifier.fillMaxSize()) { selection -> viewModel.saveCapture(document.id, page, selection, bitmap!!) { savedCapture = it; selectedTool = null } }
-            AnimatedVisibility(selectedTool == "Lápiz" || selectedTool == "Resaltar", Modifier.align(Alignment.BottomCenter)) { AnnotationOptions(selectedTool!!, annotationColor, strokeSize, { annotationColor = it }, { strokeSize = it }) }
+            if (selectedTool == "Capturar" && pageBitmap != null) CaptureSelector(Modifier.fillMaxSize()) { selection -> viewModel.saveCapture(document.id, page, selection, pageBitmap) { savedCapture = it; selectedTool = null } }
+            AnimatedVisibility(selectedTool == "Lápiz" || selectedTool == "Resaltar", Modifier.align(Alignment.BottomCenter)) { val tool = selectedTool ?: return@AnimatedVisibility; AnnotationOptions(tool, annotationColor, strokeSize, { annotationColorValue = it.toArgb().toLong() }, { strokeSize = it }) }
             Surface(Modifier.align(Alignment.BottomEnd).padding(OpenTexSpacing.Md), color = OpenTexColor.SurfaceElevated, shape = MaterialTheme.shapes.medium) { Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = OpenTexSpacing.Xs)) { IconButton({ if (page > 0) page-- }) { Icon(Icons.Outlined.ChevronLeft, "Página anterior") }; Text("${(zoom * 100).roundToInt()}%", style = MaterialTheme.typography.labelSmall); IconButton({ if (page + 1 < document.pageCount) page++ }) { Icon(Icons.Outlined.ChevronRight, "Página siguiente") } } }
             }
         }
@@ -649,4 +686,24 @@ private fun UnsupportedFormat(type: String, modifier: Modifier = Modifier) = Box
     }
 }
 
-private fun renderPdfPage(context: android.content.Context, uri: String, pageIndex: Int): Bitmap? = runCatching { context.contentResolver.openFileDescriptor(Uri.parse(uri), "r")?.use { descriptor -> PdfRenderer(descriptor).use { renderer -> if (renderer.pageCount == 0) null else renderer.openPage(pageIndex.coerceIn(0, renderer.pageCount - 1)).use { page -> val ratio = minOf(1600f / page.width, 2200f / page.height, 2f); Bitmap.createBitmap((page.width * ratio).roundToInt(), (page.height * ratio).roundToInt(), Bitmap.Config.ARGB_8888).also { page.render(it, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY) } } } } }.getOrNull()
+private fun renderPdfPage(context: android.content.Context, uri: String, pageIndex: Int): Bitmap? = runCatching {
+    val descriptor = context.contentResolver.openFileDescriptor(Uri.parse(uri), "r") ?: return@runCatching null
+    var renderer: PdfRenderer? = null
+    try {
+        val pdf = PdfRenderer(descriptor).also { renderer = it }
+        if (pdf.pageCount == 0) return@runCatching null
+        val page = pdf.openPage(pageIndex.coerceIn(0, pdf.pageCount - 1))
+        try {
+            val metrics = context.resources.displayMetrics
+            val ratio = minOf(metrics.widthPixels * 2f / page.width, metrics.heightPixels * 2f / page.height, 3f)
+            val width = (page.width * ratio).roundToInt().coerceAtLeast(1)
+            val height = (page.height * ratio).roundToInt().coerceAtLeast(1)
+            Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also { page.render(it, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY) }
+        } finally {
+            page.close()
+        }
+    } finally {
+        runCatching { renderer?.close() }
+        runCatching { descriptor.close() }
+    }
+}.getOrNull()

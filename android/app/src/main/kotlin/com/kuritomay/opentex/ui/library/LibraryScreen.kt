@@ -1,7 +1,5 @@
 package com.kuritomay.opentex.ui.library
 
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -10,6 +8,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -56,9 +55,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -69,8 +67,6 @@ import com.kuritomay.opentex.data.DocumentEntity
 import com.kuritomay.opentex.ui.theme.OpenTexColor
 import com.kuritomay.opentex.ui.theme.OpenTexSpacing
 import com.kuritomay.opentex.ui.theme.OpenTexTheme
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 private enum class LibraryFilter(val label: String) {
@@ -256,16 +252,19 @@ fun DocumentGridItem(document: DocumentEntity, open: (DocumentEntity) -> Unit, a
 
 @Composable
 fun DocumentCover(document: DocumentEntity, modifier: Modifier = Modifier) {
-    val bitmap by produceState<Bitmap?>(initialValue = null, document.thumbnailPath) {
-        value = withContext(Dispatchers.IO) { document.thumbnailPath?.let(BitmapFactory::decodeFile) }
+    val path = document.thumbnailPath
+    val bitmap by produceState<ImageBitmap?>(initialValue = path?.let(ThumbnailCache::peek), path) {
+        value = path?.let { ThumbnailCache.load(it) }
     }
     Box(
-        modifier.aspectRatio(2f / 3f).shadow(4.dp, MaterialTheme.shapes.small).clip(MaterialTheme.shapes.small)
-            .background(coverColor(document.id)),
+        modifier.aspectRatio(2f / 3f).clip(MaterialTheme.shapes.small)
+            .background(coverColor(document.id))
+            .border(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = .45f), MaterialTheme.shapes.small),
         contentAlignment = Alignment.Center,
     ) {
-        if (bitmap != null) {
-            Image(bitmap!!.asImageBitmap(), contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        val cover = bitmap
+        if (cover != null) {
+            Image(cover, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         } else {
             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(OpenTexSpacing.Md)) {
                 Icon(Icons.AutoMirrored.Outlined.MenuBook, contentDescription = null, modifier = Modifier.size(28.dp), tint = MaterialTheme.colorScheme.onSurface)
@@ -273,6 +272,29 @@ fun DocumentCover(document: DocumentEntity, modifier: Modifier = Modifier) {
                 Text((document.alias ?: document.name).substringBeforeLast(".").take(28), style = MaterialTheme.typography.labelSmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
                 Spacer(Modifier.height(OpenTexSpacing.Sm))
                 Text(document.type, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+fun LibraryLoading(modifier: Modifier = Modifier) {
+    LazyVerticalGrid(
+        columns = GridCells.Adaptive(140.dp),
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(OpenTexSpacing.Lg),
+        horizontalArrangement = Arrangement.spacedBy(OpenTexSpacing.Md),
+        verticalArrangement = Arrangement.spacedBy(OpenTexSpacing.Xxl),
+        userScrollEnabled = false,
+    ) {
+        items(8) {
+            val placeholder = MaterialTheme.colorScheme.surfaceContainerHigh
+            Column {
+                Box(Modifier.fillMaxWidth().aspectRatio(2f / 3f).clip(MaterialTheme.shapes.small).background(placeholder))
+                Spacer(Modifier.height(OpenTexSpacing.Sm))
+                Box(Modifier.fillMaxWidth(.72f).height(12.dp).clip(RoundedCornerShape(4.dp)).background(placeholder))
+                Spacer(Modifier.height(OpenTexSpacing.Xs))
+                Box(Modifier.fillMaxWidth(.4f).height(9.dp).clip(RoundedCornerShape(4.dp)).background(placeholder))
             }
         }
     }
